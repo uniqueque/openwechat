@@ -177,6 +177,16 @@ func (m *Message) ReplyText(content string) (*SentMessage, error) {
 	return m.Owner().sendTextToUser(username, content)
 }
 
+// ReplyEmoticon 回复表情
+func (m *Message) ReplyEmoticon(md5 string, file io.Reader) (*SentMessage, error) {
+	// 判断是否由自己发送
+	username := m.FromUserName
+	if m.IsSelfSendToGroup() {
+		username = m.ToUserName
+	}
+	return m.Owner().sendEmoticonToUser(username, md5, file)
+}
+
 // ReplyImage 回复图片消息
 func (m *Message) ReplyImage(file io.Reader) (*SentMessage, error) {
 	// 判断是否由自己发送
@@ -386,7 +396,7 @@ func (m *Message) Card() (*Card, error) {
 		return nil, errors.New("card message required")
 	}
 	var card Card
-	err := xml.Unmarshal(stringToByte(m.Content), &card)
+	err := xml.Unmarshal([]byte(m.Content), &card)
 	return &card, err
 }
 
@@ -396,7 +406,7 @@ func (m *Message) FriendAddMessageContent() (*FriendAddMessage, error) {
 		return nil, errors.New("friend add message required")
 	}
 	var f FriendAddMessage
-	err := xml.Unmarshal(stringToByte(m.Content), &f)
+	err := xml.Unmarshal([]byte(m.Content), &f)
 	return &f, err
 }
 
@@ -406,7 +416,7 @@ func (m *Message) RevokeMsg() (*RevokeMsg, error) {
 		return nil, errors.New("recalled message required")
 	}
 	var r RevokeMsg
-	err := xml.Unmarshal(stringToByte(m.Content), &r)
+	err := xml.Unmarshal([]byte(m.Content), &r)
 	return &r, err
 }
 
@@ -453,7 +463,7 @@ func (m *Message) MediaData() (*AppMessageData, error) {
 		return nil, errors.New("media message required")
 	}
 	var data AppMessageData
-	if err := xml.Unmarshal(stringToByte(m.Content), &data); err != nil {
+	if err := xml.Unmarshal([]byte(m.Content), &data); err != nil {
 		return nil, err
 	}
 	return &data, nil
@@ -482,7 +492,7 @@ func (m *Message) Get(key string) (value interface{}, exist bool) {
 // 消息初始化,根据不同的消息作出不同的处理
 func (m *Message) init(bot *Bot) {
 	m.bot = bot
-	defaultMessageObserver.OnMessageReceive(m)
+	defaultMessageProcessor.ProcessMessage(m)
 }
 
 // SendMessage 发送消息的结构体
@@ -494,6 +504,8 @@ type SendMessage struct {
 	LocalID      string
 	ClientMsgId  string
 	MediaId      string `json:"MediaId,omitempty"`
+	EmojiFlag    int    `json:"EmojiFlag,omitempty"`
+	EMoticonMd5  string `json:"EMoticonMd5,omitempty"`
 }
 
 // NewSendMessage SendMessage的构造方法
@@ -518,6 +530,18 @@ func NewTextSendMessage(content, fromUserName, toUserName string) *SendMessage {
 // NewMediaSendMessage 媒体消息的构造方法
 func NewMediaSendMessage(msgType MessageType, fromUserName, toUserName, mediaId string) *SendMessage {
 	return NewSendMessage(msgType, "", fromUserName, toUserName, mediaId)
+}
+
+// NewEmoticonSendMessage 表情消息的构造方法
+func NewEmoticonSendMessage(fromUserName, toUserName, md5OrMediaId string) *SendMessage {
+	msg := NewSendMessage(MsgTypeEmoticon, "", fromUserName, toUserName, "")
+	msg.EmojiFlag = 2
+	if strings.HasPrefix(md5OrMediaId, "@") {
+		msg.MediaId = md5OrMediaId
+	} else {
+		msg.EMoticonMd5 = md5OrMediaId
+	}
+	return msg
 }
 
 // RecommendInfo 一些特殊类型的消息会携带该结构体信息
@@ -685,7 +709,7 @@ func (f appmsg) XmlByte() ([]byte, error) {
 	return xml.Marshal(f)
 }
 
-func NewFileAppMessage(stat os.FileInfo, attachId string) *appmsg {
+func newFileAppMessage(stat os.FileInfo, attachId string) *appmsg {
 	m := &appmsg{AppId: appMessageAppId, Title: stat.Name()}
 	m.AppAttach.AttachId = attachId
 	m.AppAttach.TotalLen = stat.Size()

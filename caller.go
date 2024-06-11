@@ -250,6 +250,50 @@ func (c *Caller) WebWxSendMsg(ctx context.Context, opt *CallerWebWxSendMsgOption
 	return parser.SentMessage(opt.Message)
 }
 
+// WebWxSendEmoticon 发送表情接口
+func (c *Caller) WebWxSendEmoticon(ctx context.Context, md5 string, reader io.Reader, opt *CallerWebWxSendAppMsgOptions) (*SentMessage, error) {
+	md5OrMediaid := md5
+	if reader != nil {
+		file, cb, err := readerToFile(reader)
+		if err != nil {
+			return nil, err
+		}
+		defer cb()
+		// 首先尝试上传图片
+		var mediaId string
+		{
+			uploadMediaOption := &CallerUploadMediaOptions{
+				FromUserName: opt.FromUserName,
+				ToUserName:   opt.ToUserName,
+				BaseRequest:  opt.BaseRequest,
+				LoginInfo:    opt.LoginInfo,
+			}
+			resp, err := c.UploadMedia(ctx, file, uploadMediaOption)
+			if err != nil {
+				return nil, err
+			}
+			mediaId = resp.MediaId
+		}
+
+		md5OrMediaid = mediaId
+	}
+
+	msg := NewEmoticonSendMessage(opt.FromUserName, opt.ToUserName, md5OrMediaid)
+
+	wxSendMsgOption := &ClientWebWxSendMsgOptions{
+		BaseRequest: opt.BaseRequest,
+		LoginInfo:   opt.LoginInfo,
+		Message:     msg,
+	}
+	resp, err := c.Client.WebWxSendEmoticon(ctx, wxSendMsgOption)
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	parser := MessageResponseParser{resp.Body}
+	return parser.SentMessage(msg)
+}
+
 type CallerWebWxOplogOptions struct {
 	RemarkName  string
 	ToUserName  string
@@ -375,7 +419,7 @@ func (c *Caller) WebWxSendFile(ctx context.Context, reader io.Reader, opt *Calle
 	}
 	// 构造新的文件类型的信息
 	stat, _ := file.Stat()
-	appMsg := NewFileAppMessage(stat, resp.MediaId)
+	appMsg := newFileAppMessage(stat, resp.MediaId)
 	content, err := appMsg.XmlByte()
 	if err != nil {
 		return nil, err
