@@ -3,8 +3,6 @@ package openwechat
 import (
 	"bytes"
 	"context"
-	"crypto/md5"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -166,15 +164,15 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 
 // Jar 返回当前client的 http.CookieJar
 // this http.CookieJar must be *Jar type
-func (c *Client) Jar() http.CookieJar {
-	return c.client.Jar
+func (c *Client) Jar() *Jar {
+	return c.client.Jar.(*Jar)
 }
 
 // SetCookieJar 设置cookieJar
 // 这里限制了cookieJar必须是Jar类型
 // 否则进行cookie序列化的时候因为字段的私有性无法进行所有字段的导出
 func (c *Client) SetCookieJar(jar *Jar) {
-	c.client.Jar = jar.AsCookieJar()
+	c.client.Jar = jar
 }
 
 // HTTPClient 返回http.Client
@@ -438,6 +436,21 @@ func (c *Client) WebWxSendMsg(ctx context.Context, opt *ClientWebWxSendMsgOption
 	return c.sendMessage(ctx, opt.BaseRequest, path.String(), opt.Message)
 }
 
+// WebWxSendMsg 发送表情消息
+func (c *Client) WebWxSendEmoticon(ctx context.Context, opt *ClientWebWxSendMsgOptions) (*http.Response, error) {
+	opt.Message.Type = MsgTypeText
+	path, err := url.Parse(c.Domain.BaseHost() + webwxsendemoticon)
+	if err != nil {
+		return nil, err
+	}
+	params := url.Values{}
+	params.Add("fun", "sys")
+	params.Add("lang", "zh_CN")
+	params.Add("pass_ticket", opt.LoginInfo.PassTicket)
+	path.RawQuery = params.Encode()
+	return c.sendMessage(ctx, opt.BaseRequest, path.String(), opt.Message)
+}
+
 // WebWxGetHeadImg 获取用户的头像
 func (c *Client) WebWxGetHeadImg(ctx context.Context, user *User) (*http.Response, error) {
 	var path string
@@ -464,37 +477,87 @@ func (c *Client) WebWxGetHeadImg(ctx context.Context, user *User) (*http.Respons
 	return c.Do(req)
 }
 
+type webWxCheckUploadRequest struct {
+	BaseRequest  *BaseRequest `json:"BaseRequest"`
+	FileMd5      string       `json:"FileMd5"`
+	FileName     string       `json:"FileName"`
+	FileSize     int64        `json:"FileSize"`
+	FileType     uint8        `json:"FileType"`
+	FromUserName string       `json:"FromUserName"`
+	ToUserName   string       `json:"ToUserName"`
+}
+
+type webWxCheckUploadResponse struct {
+	BaseResponse  BaseResponse `json:"BaseResponse"`
+	MediaId       string       `json:"MediaId"`
+	AESKey        string       `json:"AESKey"`
+	Signature     string       `json:"Signature"`
+	EntryFileName string       `json:"EncryFileName"`
+}
+
+func (c *Client) webWxCheckUploadRequest(ctx context.Context, req webWxCheckUploadRequest) (*http.Response, error) {
+	path, err := url.Parse(c.Domain.BaseHost() + webwxcheckupload)
+	if err != nil {
+		return nil, err
+	}
+	body, err := jsonEncode(req)
+	if err != nil {
+		return nil, err
+	}
+	reqs, err := http.NewRequestWithContext(ctx, http.MethodPost, path.String(), body)
+	if err != nil {
+		return nil, err
+	}
+	reqs.Header.Add("Content-Type", jsonContentType)
+	return c.Do(reqs)
+}
+
+type uploadMediaRequest struct {
+	UploadType    uint8        `json:"UploadType"`
+	BaseRequest   *BaseRequest `json:"BaseRequest"`
+	ClientMediaId int64        `json:"ClientMediaId"`
+	TotalLen      int64        `json:"TotalLen"`
+	StartPos      int          `json:"StartPos"`
+	DataLen       int64        `json:"DataLen"`
+	MediaType     uint8        `json:"MediaType"`
+	FromUserName  string       `json:"FromUserName"`
+	ToUserName    string       `json:"ToUserName"`
+	FileMd5       string       `json:"FileMd5"`
+	AESKey        string       `json:"AESKey,omitempty"`
+	Signature     string       `json:"Signature,omitempty"`
+}
+
 type ClientWebWxUploadMediaByChunkOptions struct {
-	FromUserName string
-	ToUserName   string
-	BaseRequest  *BaseRequest
-	LoginInfo    *LoginInfo
+	FromUserName     string
+	ToUserName       string
+	BaseRequest      *BaseRequest
+	LoginInfo        *LoginInfo
+	Filename         string
+	FileMD5          string
+	FileSize         int64
+	LastModifiedDate time.Time
+	AESKey           string
+	Signature        string
+}
+
+type UploadFile interface {
+	io.ReaderAt
+	io.ReadSeeker
 }
 
 // WebWxUploadMediaByChunk 分块上传文件
 // TODO 优化掉这个函数
-func (c *Client) WebWxUploadMediaByChunk(ctx context.Context, file *os.File, opt *ClientWebWxUploadMediaByChunkOptions) (*http.Response, error) {
+func (c *Client) WebWxUploadMediaByChunk(ctx context.Context, file UploadFile, opt *ClientWebWxUploadMediaByChunkOptions) (*http.Response, error) {
 	// 获取文件上传的类型
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return nil, err
+	}
 	contentType, err := GetFileContentType(file)
 	if err != nil {
 		return nil, err
 	}
-	if _, err = file.Seek(io.SeekStart, 0); err != nil {
-		return nil, err
-	}
 
-	// 获取文件的md5
-	h := md5.New()
-	if _, err = io.Copy(h, file); err != nil {
-		return nil, err
-	}
-	fileMd5 := hex.EncodeToString(h.Sum(nil))
-
-	sate, err := file.Stat()
-	if err != nil {
-		return nil, err
-	}
-	filename := sate.Name()
+	filename := opt.Filename
 
 	if ext := filepath.Ext(filename); ext == "" {
 		names := strings.Split(contentType, "/")
@@ -502,7 +565,7 @@ func (c *Client) WebWxUploadMediaByChunk(ctx context.Context, file *os.File, opt
 	}
 
 	// 获取文件的类型
-	mediaType := getMessageType(filename)
+	mediaType := messageType(filename)
 
 	path, err := url.Parse(c.Domain.FileHost() + webwxuploadmedia)
 	if err != nil {
@@ -515,22 +578,24 @@ func (c *Client) WebWxUploadMediaByChunk(ctx context.Context, file *os.File, opt
 
 	cookies := c.Jar().Cookies(path)
 
-	webWxDataTicket, err := getWebWxDataTicket(cookies)
+	webWxDataTicket, err := wxDataTicket(cookies)
 	if err != nil {
 		return nil, err
 	}
 
-	uploadMediaRequest := map[string]interface{}{
-		"UploadType":    2,
-		"BaseRequest":   opt.BaseRequest,
-		"ClientMediaId": time.Now().Unix() * 1e4,
-		"TotalLen":      sate.Size(),
-		"StartPos":      0,
-		"DataLen":       sate.Size(),
-		"MediaType":     4,
-		"FromUserName":  opt.FromUserName,
-		"ToUserName":    opt.ToUserName,
-		"FileMd5":       fileMd5,
+	uploadMediaRequest := &uploadMediaRequest{
+		UploadType:    2,
+		BaseRequest:   opt.BaseRequest,
+		ClientMediaId: time.Now().Unix() * 1e4,
+		TotalLen:      opt.FileSize,
+		StartPos:      0,
+		DataLen:       opt.FileSize,
+		MediaType:     4,
+		FromUserName:  opt.FromUserName,
+		ToUserName:    opt.ToUserName,
+		FileMd5:       opt.FileMD5,
+		AESKey:        opt.AESKey,
+		Signature:     opt.Signature,
 	}
 
 	uploadMediaRequestByte, err := json.Marshal(uploadMediaRequest)
@@ -539,14 +604,14 @@ func (c *Client) WebWxUploadMediaByChunk(ctx context.Context, file *os.File, opt
 	}
 
 	// 计算上传文件的次数
-	chunks := int((sate.Size() + chunkSize - 1) / chunkSize)
+	chunks := int((opt.FileSize + chunkSize - 1) / chunkSize)
 
 	content := map[string]string{
 		"id":                "WU_FILE_0",
 		"name":              filename,
 		"type":              contentType,
-		"lastModifiedDate":  sate.ModTime().Format(TimeFormat),
-		"size":              strconv.FormatInt(sate.Size(), 10),
+		"lastModifiedDate":  opt.LastModifiedDate.Format(TimeFormat),
+		"size":              strconv.FormatInt(opt.FileSize, 10),
 		"mediatype":         mediaType,
 		"webwx_data_ticket": webWxDataTicket,
 		"pass_ticket":       opt.LoginInfo.PassTicket,
@@ -581,7 +646,7 @@ func (c *Client) WebWxUploadMediaByChunk(ctx context.Context, file *os.File, opt
 			}
 
 			// create form file
-			fileWriter, err := writer.CreateFormFile("filename", file.Name())
+			fileWriter, err := writer.CreateFormFile("filename", filename)
 			if err != nil {
 				return err
 			}
@@ -656,6 +721,7 @@ func (c *Client) WebWxSendAppMsg(ctx context.Context, msg *SendMessage, request 
 	params := url.Values{}
 	params.Add("fun", "async")
 	params.Add("f", "json")
+	params.Add("lang", "zh_CN")
 	path.RawQuery = params.Encode()
 	return c.sendMessage(ctx, request, path.String(), msg)
 }
@@ -800,7 +866,7 @@ func (c *Client) WebWxGetMedia(ctx context.Context, msg *Message, info *LoginInf
 		return nil, err
 	}
 	cookies := c.Jar().Cookies(path)
-	webWxDataTicket, err := getWebWxDataTicket(cookies)
+	webWxDataTicket, err := wxDataTicket(cookies)
 	if err != nil {
 		return nil, err
 	}
@@ -965,6 +1031,7 @@ func (c *Client) WebWxRevokeMsg(ctx context.Context, msg *SentMessage, request *
 }
 
 // 校验上传文件
+// nolint:unused
 func (c *Client) webWxCheckUpload(stat os.FileInfo, request *BaseRequest, fileMd5, fromUserName, toUserName string) (*http.Response, error) {
 	path, err := url.Parse(c.Domain.BaseHost() + webwxcheckupload)
 	if err != nil {

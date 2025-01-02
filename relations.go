@@ -181,17 +181,22 @@ func (g *Group) String() string {
 	return fmt.Sprintf("<Group:%s>", g.NickName)
 }
 
-// SendText 发行文本消息给当前的群组
+// SendText 发送文本消息给当前的群组
 func (g *Group) SendText(content string) (*SentMessage, error) {
 	return g.Self().SendTextToGroup(g, content)
 }
 
-// SendImage 发行图片消息给当前的群组
+// SendImage 发送图片消息给当前的群组
 func (g *Group) SendImage(file io.Reader) (*SentMessage, error) {
 	return g.Self().SendImageToGroup(g, file)
 }
 
-// SendVideo 发行视频消息给当前的群组
+// SendEmoticon 发送表情消息给当前的群组
+func (g *Group) SendEmoticon(md5 string, file io.Reader) (*SentMessage, error) {
+	return g.Self().SendEmoticonToGroup(g, md5, file)
+}
+
+// SendVideo 发送视频消息给当前的群组
 func (g *Group) SendVideo(file io.Reader) (*SentMessage, error) {
 	return g.Self().SendVideoToGroup(g, file)
 }
@@ -246,7 +251,7 @@ func (g *Group) SearchMemberByUsername(username string) (*User, error) {
 	// 再次尝试获取
 	members = g.MemberList.SearchByUserName(1, username)
 	if members.Count() == 0 {
-		return nil, ErrNoSuchUserFoundError
+		return nil, ErrNoSuchUserFound
 	}
 	return members.First(), nil
 }

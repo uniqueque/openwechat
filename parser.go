@@ -7,11 +7,9 @@ import (
 	"math/rand"
 	"net/http"
 	"path/filepath"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
-	"unsafe"
 )
 
 func jsonEncode(v interface{}) (io.Reader, error) {
@@ -27,12 +25,12 @@ func jsonEncode(v interface{}) (io.Reader, error) {
 
 // GetRandomDeviceId 获取随机设备id
 func GetRandomDeviceId() string {
-	rand.Seed(time.Now().Unix())
+	rng := rand.New(rand.NewSource(time.Now().Unix()))
 	var builder strings.Builder
 	builder.Grow(16)
 	builder.WriteString("e")
 	for i := 0; i < 15; i++ {
-		r := rand.Intn(9)
+		r := rng.Intn(9)
 		builder.WriteString(strconv.Itoa(r))
 	}
 	return builder.String()
@@ -47,32 +45,33 @@ func GetFileContentType(file io.Reader) (string, error) {
 	return http.DetectContentType(data), nil
 }
 
-func getFileExt(name string) string {
-	ext := filepath.Ext(name)
+// fileExtension
+func fileExtension(name string) string {
+	ext := strings.ToLower(filepath.Ext(name))
 	if len(ext) == 0 {
-		ext = "undefined"
+		return "undefined"
 	}
 	return strings.TrimPrefix(ext, ".")
 }
 
-const (
-	pic   = "pic"
-	video = "video"
-	doc   = "doc"
-)
-
-// 微信匹配文件类型策略
-func getMessageType(filename string) string {
-	ext := getFileExt(filename)
-	if _, ok := imageType[ext]; ok {
-		return pic
+// 判断是否是图片
+func isImageType(imageType string) bool {
+	switch imageType {
+	case "bmp", "png", "jpeg", "jpg", "gif":
+		return true
+	default:
+		return false
 	}
-	if ext == videoType {
-		return video
-	}
-	return doc
 }
 
-func stringToByte(s string) []byte {
-	return *(*[]byte)(unsafe.Pointer(&*(*reflect.StringHeader)(unsafe.Pointer(&s))))
+// 微信匹配文件类型策略
+func messageType(filename string) string {
+	ext := fileExtension(filename)
+	if isImageType(ext) {
+		return "pic"
+	}
+	if ext == "mp4" {
+		return "video"
+	}
+	return "doc"
 }
